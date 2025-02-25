@@ -7,10 +7,9 @@ app.use(express.json())
 
 const clients = new Map() // Map to store clients per UUID
 
-const server = http.createServer(app)
-const wss = new WebSocket.Server({ noServer: true })
+const server = http.createServer(app) // Unified server for Express & WS
+const wss = new WebSocket.Server({ server }) // Attach WS to the same server
 
-// Transform function (unchanged)
 function getFirstElement(field, defaultValue) {
   return field && field.length > 0 ? field[0] : defaultValue
 }
@@ -34,7 +33,6 @@ function transformPacket(packet) {
   }
 }
 
-// Function to broadcast messages per UUID
 function broadcastToClients(uuid, packet) {
   const data = JSON.stringify(packet)
   if (clients.has(uuid)) {
@@ -47,39 +45,37 @@ function broadcastToClients(uuid, packet) {
 }
 
 // Handle WebSocket connection per UUID
-server.on("upgrade", (request, socket, head) => {
+wss.on("connection", (ws, request) => {
   const uuid = request.url.slice(1) // Extract UUID from URL (e.g., "/843cf35d..." → "843cf35d...")
 
   if (!uuid) {
-    socket.destroy()
+    ws.close()
     return
   }
 
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    if (!clients.has(uuid)) {
-      clients.set(uuid, new Set())
+  if (!clients.has(uuid)) {
+    clients.set(uuid, new Set())
+  }
+  clients.get(uuid).add(ws)
+
+  console.log(`Client connected on UUID: ${uuid}`)
+
+  ws.on("message", (message) => {
+    try {
+      const packet = JSON.parse(message)
+      const transformedData = transformPacket(packet)
+      broadcastToClients(uuid, transformedData)
+    } catch (error) {
+      console.error("Error processing message:", error)
     }
-    clients.get(uuid).add(ws)
+  })
 
-    console.log(`Client connected on UUID: ${uuid}`)
-
-    ws.on("message", (message) => {
-      try {
-        const packet = JSON.parse(message)
-        const transformedData = transformPacket(packet)
-        broadcastToClients(uuid, transformedData)
-      } catch (error) {
-        console.error("Error processing message:", error)
-      }
-    })
-
-    ws.on("close", () => {
-      console.log(`Client disconnected from UUID: ${uuid}`)
-      clients.get(uuid).delete(ws)
-      if (clients.get(uuid).size === 0) {
-        clients.delete(uuid)
-      }
-    })
+  ws.on("close", () => {
+    console.log(`Client disconnected from UUID: ${uuid}`)
+    clients.get(uuid).delete(ws)
+    if (clients.get(uuid).size === 0) {
+      clients.delete(uuid)
+    }
   })
 })
 
@@ -89,11 +85,10 @@ app.post("/uuid", (req, res) => {
     return res.status(400).json({ error: "UUID is required" })
   }
 
-  console.log(`UUID received: ${uuid}. Clients can connect at ws://localhost:4000/${uuid}`)
+  console.log(`UUID received: ${uuid}. Clients can connect at ws://localhost:${PORT}/${uuid}`)
   res.json({ message: `WebSocket route enabled for UUID: ${uuid}` })
 })
 
-const apiPort = 3000
-const wsPort = 4000
-app.listen(apiPort, () => console.log(`API Server running on port ${apiPort}`))
-server.listen(wsPort, () => console.log(`WebSocket Server running on port ${wsPort}`))
+// Use Railway assigned port or default to 3000 for local testing
+const PORT = process.env.PORT || 3000
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`))
